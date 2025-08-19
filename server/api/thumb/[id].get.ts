@@ -17,7 +17,20 @@ export default defineEventHandler(async (event) => {
   const cacheDir = path.join(process.cwd(), ".cache", "thumbs");
   fs.mkdirSync(cacheDir, { recursive: true });
   const outPath = path.join(cacheDir, id + ".jpg");
-  if (!fs.existsSync(outPath)) {
+
+  // --- ここから修正 ---
+  // ファイルが存在しない、またはファイルサイズが0の場合に再生成する
+  const fileExists = fs.existsSync(outPath);
+  const needsGeneration =
+    !fileExists || (fileExists && fs.statSync(outPath).size === 0);
+
+  if (needsGeneration) {
+    // もし0バイトのファイルが存在するなら、一度削除する
+    if (fileExists) {
+      fs.unlinkSync(outPath);
+    }
+    // --- ここまで修正 ---
+
     if (!fs.existsSync(abs)) {
       console.error(`[thumb] Source file not found: ${abs}`);
       throw createError({
@@ -38,6 +51,8 @@ export default defineEventHandler(async (event) => {
       });
     }
   }
+
+  // sendStream を使ってファイルを返す
   setHeader(event, "Content-Type", "image/jpeg");
   return sendStream(event, fs.createReadStream(outPath));
 });
