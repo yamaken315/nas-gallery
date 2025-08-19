@@ -3,17 +3,29 @@ import path from "node:path";
 import sharp from "sharp";
 import os from "node:os";
 
+// --- Configuration ---
 const root = process.env.IMAGE_ROOT || "/mnt/nas/photos";
 const exts = [".jpg", ".jpeg", ".png", ".webp"];
-const CONCURRENCY = Number(process.env.SCAN_CONCURRENCY || os.cpus().length); // 並列リサイズ
+const CONCURRENCY = Number(process.env.SCAN_CONCURRENCY || os.cpus().length);
 
-// db util を直接 ESM import
-const { upsertImage, loadImagesMap, markDeleted, setMeta } = await import(
-  "../server/utils/db.js"
-);
+// TypeScript の db.ts はそのままでは Node が解釈できないため、純 JS 版を利用
+let dbMod;
+try {
+  dbMod = await import("../server/utils/db-runtime.js");
+} catch (e) {
+  console.error("[scan] FATAL: cannot load db-runtime.js. Did you create it?", e);
+  process.exit(1);
+}
+const { upsertImage, loadImagesMap, markDeleted, setMeta } = dbMod;
 
 const start = Date.now();
 console.log(`[scan] start root=${root}`);
+
+// パス存在確認
+if (!fs.existsSync(root)) {
+  console.error(`[scan] ERROR: IMAGE_ROOT path not found: ${root}`);
+  process.exit(2);
+}
 
 // 既存マップ
 const existing = loadImagesMap(); // rel_path -> {id,mtime,size}
@@ -21,7 +33,14 @@ const existing = loadImagesMap(); // rel_path -> {id,mtime,size}
 // ファイル列挙
 const diskFiles = [];
 function walk(dir) {
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+  let entries;
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch (e) {
+    console.error(`\n[walk] read error: ${dir} ${e.message}`);
+    return;
+  }
+  for (const entry of entries) {
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) walk(full);
     else {
@@ -37,32 +56,28 @@ let inserted = 0,
   skipped = 0,
   thumbGen = 0;
 
-// サムネイル出力パス用
+// サムネイル出力パス
 const cacheDir = path.join(process.cwd(), ".cache", "thumbs");
 fs.mkdirSync(cacheDir, { recursive: true });
 
-// 並列キュー実装
-const queue = [];
-async function worker() {
-  while (true) {
-    const job = queue.shift();
-    if (!job) break;
-    await job();
-  }
-}
-
+// 並列キュー (シンプルな index 方式)
+const jobs = [];
 for (const abs of diskFiles) {
   const rel = path.relative(root, abs);
-  const stat = fs.statSync(abs);
+  let stat;
+  try {
+    stat = fs.statSync(abs);
+  } catch {
+    continue;
+  }
   const prev = existing[rel];
-  // 変更判定: 新規 or mtime/size 変化
   const changed =
     !prev || prev.mtime !== Math.floor(stat.mtimeMs) || prev.size !== stat.size;
   if (!changed) {
     skipped++;
     continue;
   }
-  queue.push(async () => {
+  jobs.push(async () => {
     try {
       const meta = await sharp(abs).metadata();
       upsertImage({
@@ -76,8 +91,7 @@ for (const abs of diskFiles) {
       });
       if (!prev) inserted++;
       else updated++;
-      // サムネイル: まだ無い場合のみ生成
-      const idForName = prev?.id; // 既存ID (新規はまだ不明) → 新規はアクセス時生成に任せ簡略化
+      const idForName = prev?.id;
       if (idForName) {
         const thumbPath = path.join(cacheDir, idForName + ".jpg");
         if (!fs.existsSync(thumbPath)) {
@@ -99,7 +113,23 @@ for (const abs of diskFiles) {
   });
 }
 
-// 削除検出: DB にありディスクに存在しない rel_path
+async function runPool(limit) {
+  let idx = 0;
+  const active = [];
+  while (idx < jobs.length) {
+    while (active.length < limit && idx < jobs.length) {
+      const p = jobs[idx++]().finally(() => {
+        const i = active.indexOf(p);
+        if (i >= 0) active.splice(i, 1);
+      });
+      active.push(p);
+    }
+    await Promise.race(active);
+  }
+  await Promise.all(active);
+}
+
+// 削除検出
 const diskSet = new Set(diskFiles.map((f) => path.relative(root, f)));
 const toDelete = Object.keys(existing).filter((rel) => !diskSet.has(rel));
 if (toDelete.length) {
@@ -107,10 +137,7 @@ if (toDelete.length) {
   console.log(`\n[delete] marked ${toDelete.length} records as deleted`);
 }
 
-// ワーカー起動
-const workers = Array.from({ length: CONCURRENCY }, worker);
-await Promise.all(workers);
-
+await runPool(CONCURRENCY);
 setMeta("last_scan_finished", new Date().toISOString());
 
 const elapsed = ((Date.now() - start) / 1000).toFixed(1);
