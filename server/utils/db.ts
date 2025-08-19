@@ -121,14 +121,26 @@ export function setMeta(key: string, value: string) {
     `INSERT INTO meta (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`
   ).run(key, value);
 }
+// ... existing code ...
 export function getMeta(key: string): string | undefined {
   const row = db.prepare(`SELECT value FROM meta WHERE key=?`).get(key) as any;
   return row?.value;
 }
 
+// 画像IDから画像情報を取得する関数を追加
+const getImageByIdStmt = db.prepare(
+  "SELECT * FROM images WHERE id = ? AND deleted = 0"
+);
+export function getImageById(id: number) {
+  return getImageByIdStmt.get(id) as
+    | { id: number; rel_path: string }
+    | undefined;
+}
+
 export function getDb() {
   return db;
 }
+// ... existing code ...
 
 export function getTagsForImage(imageId: number) {
   return getDb()

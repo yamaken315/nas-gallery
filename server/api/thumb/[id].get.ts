@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import sharp from "sharp";
+import { getImageById } from "../../utils/db";
 
 export default defineEventHandler(async (event) => {
   const id = Number(getRouterParam(event, "id"));
@@ -20,7 +21,6 @@ export default defineEventHandler(async (event) => {
   }
 
   // 2. キャッシュがなければ、DBから元画像情報を取得
-  const { getImageById } = await import("../../utils/db");
   const img = getImageById(id);
   if (!img) {
     throw createError({
