@@ -1,103 +1,137 @@
-# NAS Gallery
+# NAS Photo Gallery
 
-ローカル NAS(QNAP 等) 上の画像を高速閲覧しタグ管理する学習用ギャラリー。
+A simple photo gallery application for browsing images stored on a NAS, built with Nuxt 3.
 
-## 主な機能
+This application allows you to mount a directory of images and browse them through a web interface. It features on-demand thumbnail generation, basic authentication, and a clean, responsive UI.
 
-- 画像メタデータを SQLite にキャッシュ (差分スキャン対応)
-- サムネイル自動生成 (sharp)
-- タグ付け / 編集 UI (カンマ区切り全置換)
-- Basic 認証 (後で強化可能)
+## Features
 
-## 要件
+-   Web-based image browsing
+-   On-demand thumbnail generation for fast loading
+-   Responsive grid layout
+-   Lightbox view for full-size images
+-   Basic authentication to protect your gallery
+-   Differential scanning to efficiently update the image database
 
-- Node.js 18+ 推奨 (ESM / sharp 対応)
-- NAS の共有フォルダをローカルへマウント済み (例: `/mnt/nas/photos`)
-- macOS / Linux 開発想定
+## Setup and Installation
 
-## 迅速セットアップ (Quick Start)
+### 1. Prerequisites
+
+-   [Node.js](https://nodejs.org/) (v18 or later recommended)
+-   An image directory accessible from the machine running the application (e.g., a mounted NAS share).
+
+### 2. Clone the Repository
 
 ```bash
-# 1. 依存インストール
+git clone <your-repository-url>
+cd nas-gallery
+```
+
+### 3. Install Dependencies
+
+```bash
 npm install
+```
 
-# 2. 環境変数ファイル作成
+### 4. Configure Environment Variables
+
+Create a `.env` file in the root of the project by copying the example file:
+
+```bash
 cp .env.example .env
-# .env を開き IMAGE_ROOT や BASIC_PASS_HASH を必要に応じ調整
+```
 
-# 3. 開発サーバ起動
+Now, edit the `.env` file with your specific settings:
+
+```
+# Path to the root directory of your images (e.g., a NAS mount point)
+IMAGE_ROOT=/path/to/your/nas/photos
+
+# Basic authentication credentials
+BASIC_AUTH_USER=admin
+BASIC_AUTH_PASS=your-secret-password
+
+# (Optional) Port for the application
+NUXT_PORT=3000
+
+# (Optional) Thumbnail width in pixels
+NUXT_PUBLIC_THUMBNAIL_WIDTH=400
+```
+
+**Important:**
+-   `IMAGE_ROOT` must be an **absolute path** to the directory containing your images.
+-   Change `BASIC_AUTH_PASS` to a strong, unique password.
+
+### 5. Scan Your Image Directory
+
+Before starting the application for the first time, you need to scan your image directory to populate the database. This command is idempotent and can be run safely multiple times.
+
+```bash
+npm run scan
+```
+
+This script will:
+-   Find all `.jpg`, `.jpeg`, `.png`, and `.gif` files in your `IMAGE_ROOT`.
+-   Register them in a local SQLite database (`data/meta.db`).
+-   Mark files that were previously registered but are no longer found as "deleted".
+-   If an image file has been updated (based on size or modification time), it will clear the old thumbnail cache, ensuring a fresh thumbnail is generated on the next request.
+
+Run this script whenever you add, remove, or update images in your directory.
+
+### 6. Start the Application
+
+```bash
 npm run dev
-# 別ターミナルで初回スキャン (NAS パスを環境変数で上書き可)
-IMAGE_ROOT=/Volumes/samples node scripts/scan-and-thumb.mjs
-
-# 4. ブラウザアクセス
-open http://localhost:3000/
-# Basic 認証: BASIC_USER / BASIC_PASS_HASH の plain: 以降
 ```
 
-## .env 主要項目
+The application will be available at `http://localhost:3000` (or the port you specified). You will be prompted for the username and password you set in the `.env` file.
 
-| 変数             | 説明                                   |
-| ---------------- | -------------------------------------- |
-| IMAGE_ROOT       | NAS 上の画像ルートパス                 |
-| BASIC_USER       | Basic 認証ユーザ名                     |
-| BASIC_PASS_HASH  | `plain:password` 形式 (後で bcrypt 化) |
-| THUMBNAIL_WIDTH  | サムネイル幅 (既定 320)                |
-| SCAN_CONCURRENCY | スキャン並列数 (CPU コア数推奨)        |
+## Usage
 
-## ディレクトリ構成 (抜粋)
+-   **Browse:** Scroll through the gallery. Images are loaded in pages.
+-   **View Full-Size:** Click on any thumbnail to open the full-size image in a lightbox overlay. You can navigate between images within the lightbox.
+-   **Update Library:** After adding or removing photos from your `IMAGE_ROOT` directory, stop the application, run `npm run scan` again, and then restart the application.
 
-```
-server/
-  middleware/basicAuth.ts   # 認証
-  utils/db.ts               # SQLite 初期化 + クエリ
-  api/...                   # API ルート
-scripts/scan-and-thumb.mjs  # 差分スキャン + メタ更新
-pages/                      # Nuxt ページ (一覧 / 詳細+タグ)
-.docs/PROJECT_MANIFEST.md   # プロジェクト方針 & 進捗
-.cache/thumbs               # 生成サムネイル (自動)
-data/meta.db                # SQLite DB (自動)
-```
+## Project Structure
 
-## スキャン (差分)
+-   `server/`: Nuxt server directory.
+    -   `api/`: API endpoints for images, thumbnails, etc.
+    -   `middleware/`: Basic authentication middleware.
+    -   `utils/`: Database utilities (`db.ts`).
+-   `pages/`: Vue components for pages.
+-   `scripts/`: Node.js scripts, including the `scan-and-thumb.mjs` scanner.
+-   `data/`: Contains the SQLite database (`meta.db`). This is ignored by Git.
+-   `.cache/`: Stores generated thumbnails. This is ignored by Git.
+-   `nuxt.config.ts`: Nuxt configuration file.
+-   `.env`: Your local environment configuration (ignored by Git).
+-   `.env.example`: An example environment file.
 
-- mtime / size が変化したファイルのみ更新
-- 既に無いファイルは `deleted=1` マーク (物理削除は行わない)
-- 実行例: `SCAN_CONCURRENCY=8 IMAGE_ROOT=/mnt/nas/photos node scripts/scan-and-thumb.mjs`
+## Security Considerations
 
-## タグ編集
+-   Keep your `.env` file secret. It contains sensitive information like your database path and authentication credentials.
+-   Consider using a stronger authentication mechanism (like OAuth) and serving your application over HTTPS in a production environment.
 
-1. 一覧から画像をクリック
-2. 詳細ページの Tags フォームに `family, summer, 2023` のように入力 → Save
-3. PUT により既存タグを置換
-4. 全タグ: `/api/tags` (usage_count 含む)
+## Troubleshooting Common Issues
 
-## セキュリティ注意
+| Symptom               | Solution                                                            |
+| --------------------- | ------------------------------------------------------------------- |
+| Images not showing    | Check the `IMAGE_ROOT` path and permissions. Ensure the NAS is mounted. |
+| Thumbnail generation  | Rebuild sharp dependencies: `npm rebuild sharp`                     |
+| Authentication issues | Clear browser cache or try a different browser.                     |
+| Cannot push to repo   | Check SSH key settings and verify remote URL with `git remote -v`.  |
 
-- `.env` や `data/` を公開したくない場合は非公開リポジトリ利用推奨
-- Basic 認証は学習/局所利用前提。外部公開する際は HTTPS + bcrypt + セッション / 逆プロキシ必須
+## Roadmap (Partial)
 
-## 典型的トラブルシュート
+-   Implement bcrypt + session-based authentication
+-   Add EXIF data reading (exifr)
+-   Implement PATCH API for tags (add/remove differential updates)
+-   Add thumbnail retry queue
+-   Implement physical delete garbage collector
 
-| 症状               | 対処                                                            |
-| ------------------ | --------------------------------------------------------------- |
-| 画像が表示されない | IMAGE_ROOT のパス/権限確認。NAS マウントが切れていないか        |
-| サムネイル生成失敗 | sharp の依存 (libvips) 再インストール: `npm rebuild sharp`      |
-| タグ保存 401       | Basic 認証ヘッダをブラウザが保持しているか確認 / パスワード照合 |
-| push できない      | SSH 鍵設定 / `git remote -v` 再確認                             |
+## License
 
-## Roadmap (抜粋)
-
-- bcrypt + セッション認証
-- EXIF 読み取り (exifr)
-- タグ PATCH API (追加/削除差分更新)
-- サムネイル再試行キュー
-- 物理削除ガーベジコレクタ
-
-## ライセンス
-
-学習用途 (未指定: 必要に応じて追加)。
+For learning purposes (unspecified: add as needed).
 
 ---
 
-改善案 / Issue: GitHub Issues へ。PR 歓迎。
+Feedback / Issues: Please use GitHub Issues. PRs are welcome.
