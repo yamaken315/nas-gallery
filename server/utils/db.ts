@@ -1,6 +1,6 @@
 import Database from "better-sqlite3";
-import fs from "node:fs";
-import path from "node:path";
+import * as fs from "node:fs";
+import * as path from "node:path";
 
 const dbPath = path.join(process.cwd(), "data", "meta.db");
 fs.mkdirSync(path.dirname(dbPath), { recursive: true });

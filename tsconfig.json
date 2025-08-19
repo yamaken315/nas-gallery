@@ -15,4 +15,13 @@
       "path": "./.nuxt/tsconfig.node.json"
     }
   ]
+  ,
+  "compilerOptions": {
+    "module": "ESNext", // または "NodeNext"
+    "target": "ES2020",
+    "esModuleInterop": true,
+    "moduleResolution": "Node",
+    "outDir": "dist"
+    // ...他の設定...
+  }
 }
