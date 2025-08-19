@@ -71,8 +71,17 @@ for (const abs of diskFiles) {
     continue;
   }
   const prev = existing[rel];
+
+  // サムネイルの存在チェックを追加
+  const thumbPath = prev ? path.join(cacheDir, prev.id + ".jpg") : null;
+  const thumbExists = thumbPath ? fs.existsSync(thumbPath) : false;
+
   const changed =
-    !prev || prev.mtime !== Math.floor(stat.mtimeMs) || prev.size !== stat.size;
+    !prev ||
+    prev.mtime !== Math.floor(stat.mtimeMs) ||
+    prev.size !== stat.size ||
+    !thumbExists; // サムネイルが存在しない場合も変更とみなす
+
   if (!changed) {
     skipped++;
     continue;
