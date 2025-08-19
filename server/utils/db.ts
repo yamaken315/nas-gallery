@@ -6,176 +6,172 @@ const dbPath = path.join(process.cwd(), "data", "meta.db");
 fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 const db = new Database(dbPath);
 
-// スキーマ初期化/追加 (idempotent)
+// --- スキーマ定義 ---
+// データベースの構造を定義し、不足しているカラムがあれば追加します。
 db.exec(`
-PRAGMA journal_mode = WAL;
-CREATE TABLE IF NOT EXISTS images (
-  id INTEGER PRIMARY KEY,
-  rel_path TEXT UNIQUE,
-  filename TEXT,
-  ext TEXT,
-  mtime INTEGER,
-  size INTEGER,
-  width INTEGER,
-  height INTEGER
-);
-CREATE TABLE IF NOT EXISTS tags (
-  id INTEGER PRIMARY KEY,
-  name TEXT UNIQUE
-);
-CREATE TABLE IF NOT EXISTS image_tags (
-  image_id INTEGER,
-  tag_id INTEGER,
-  PRIMARY KEY(image_id, tag_id)
-);
-CREATE TABLE IF NOT EXISTS meta (
-  key TEXT PRIMARY KEY,
-  value TEXT
-);
-CREATE TRIGGER IF NOT EXISTS update_images_updated_at
-  AFTER UPDATE ON images
-  FOR EACH ROW
-  BEGIN
-    UPDATE images SET updated_at = DATETIME('now', 'localtime') WHERE id = OLD.id;
-  END;
+  PRAGMA journal_mode = WAL;
+  CREATE TABLE IF NOT EXISTS images (
+    id INTEGER PRIMARY KEY,
+    rel_path TEXT UNIQUE,
+    filename TEXT,
+    ext TEXT,
+    mtime INTEGER,
+    size INTEGER,
+    width INTEGER,
+    height INTEGER,
+    deleted INTEGER NOT NULL DEFAULT 0
+  );
+  CREATE TABLE IF NOT EXISTS tags (
+    id INTEGER PRIMARY KEY,
+    name TEXT UNIQUE
+  );
+  CREATE TABLE IF NOT EXISTS image_tags (
+    image_id INTEGER,
+    tag_id INTEGER,
+    PRIMARY KEY(image_id, tag_id)
+  );
+  CREATE TABLE IF NOT EXISTS meta (
+    key TEXT PRIMARY KEY,
+    value TEXT
+  );
 `);
 
-// サムネイルキャッシュを削除するヘルパー関数
-function deleteThumbnailCache(id: number) {
-  const cacheDir = path.join(process.cwd(), ".cache", "thumbs");
-  const thumbPath = path.join(cacheDir, id + ".jpg");
-  if (fs.existsSync(thumbPath)) {
-    try {
-      fs.unlinkSync(thumbPath);
-      console.log(`[db] Deleted old thumbnail cache for id: ${id}`);
-    } catch (e) {
-      console.error(`[db] Failed to delete thumbnail cache for id: ${id}`, e);
-    }
-  }
+// 既存のテーブルに 'deleted' カラムがなければ追加する
+const imagesTableInfo = db.prepare("PRAGMA table_info(images)").all();
+if (!imagesTableInfo.some((col: any) => col.name === "deleted")) {
+  db.exec("ALTER TABLE images ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0");
 }
 
-// 画像情報を挿入または更新
-const upsertImageStmt = {
-  select: db.prepare(
-    "SELECT id, size, mtime, deleted FROM images WHERE rel_path = ?"
-  ),
-  insert: db.prepare(
-    "INSERT INTO images (rel_path, size, mtime) VALUES (?, ?, ?)"
-  ),
-  update: db.prepare(
-    "UPDATE images SET size = ?, mtime = ?, deleted = 0 WHERE id = ?"
-  ),
-};
-export function upsertImage(relPath: string, size: number, mtime: number) {
-  const existing = upsertImageStmt.select.get(relPath) as
-    | { id: number; size: number; mtime: number; deleted: number }
-    | undefined;
+// --- 画像操作 ---
 
-  if (existing) {
-    // 既存レコードがあり、ファイルが更新されているか、削除済みフラグが立っている場合
-    if (
-      existing.size !== size ||
-      existing.mtime !== mtime ||
-      existing.deleted === 1
-    ) {
-      // 古いサムネイルキャッシュを削除
-      deleteThumbnailCache(existing.id);
-      upsertImageStmt.update.run(size, mtime, existing.id);
-      console.log(`[db] Updated image: ${relPath}`);
-    }
-    // 変更がない場合は何もしない
-  } else {
-    // 新規レコード
-    upsertImageStmt.insert.run(relPath, size, mtime);
-    console.log(`[db] Inserted new image: ${relPath}`);
-  }
+// 画像情報を挿入または更新する
+const upsertImageStmt = db.prepare(`
+  INSERT INTO images (rel_path, filename, ext, mtime, size, width, height, deleted)
+  VALUES (@rel_path, @filename, @ext, @mtime, @size, @width, @height, 0)
+  ON CONFLICT(rel_path) DO UPDATE SET
+    mtime=excluded.mtime,
+    size=excluded.size,
+    width=excluded.width,
+    height=excluded.height,
+    deleted=0
+`);
+export function upsertImage(meta: {
+  rel_path: string;
+  filename: string;
+  ext: string;
+  mtime: number;
+  size: number;
+  width?: number;
+  height?: number;
+}) {
+  upsertImageStmt.run(meta);
 }
 
-// 画像を削除済みにする
-const markDeletedStmt = db.prepare(
-  "UPDATE images SET deleted = 1 WHERE id = ?"
-);
-export function markDeleted(id: number) {
-  // 先にサムネイルを削除
-  deleteThumbnailCache(id);
-  markDeletedStmt.run(id);
-  console.log(`[db] Marked as deleted: id=${id}`);
+// 【修正】欠落していた listImages 関数を追加
+const listImagesStmt = db.prepare(`
+  SELECT id, rel_path, filename, width, height
+  FROM images
+  WHERE deleted = 0
+  ORDER BY id DESC
+  LIMIT ? OFFSET ?
+`);
+export function listImages(limit: number, offset: number) {
+  return listImagesStmt.all(limit, offset);
 }
 
-// 画像一覧をロードしてマップで返す
-const loadImagesMapStmt = db.prepare(
-  "SELECT id, rel_path FROM images WHERE deleted = 0"
-);
-export function loadImagesMap(): Map<string, number> {
-  const rows = loadImagesMapStmt.all() as { id: number; rel_path: string }[];
-  const map = new Map<string, number>();
-  for (const row of rows) {
-    map.set(row.rel_path, row.id);
-  }
-  return map;
-}
-
-// 画像のメタデータを設定
-export function setMeta(key: string, value: string) {
-  db.prepare(
-    `INSERT INTO meta (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`
-  ).run(key, value);
-}
-// ... existing code ...
-export function getMeta(key: string): string | undefined {
-  const row = db.prepare(`SELECT value FROM meta WHERE key=?`).get(key) as any;
-  return row?.value;
-}
-
-// 画像IDから画像情報を取得する関数を追加
 const getImageByIdStmt = db.prepare(
   "SELECT * FROM images WHERE id = ? AND deleted = 0"
 );
 export function getImageById(id: number) {
-  return getImageByIdStmt.get(id) as
-    | { id: number; rel_path: string }
-    | undefined;
+  return getImageByIdStmt.get(id);
 }
+
+const loadImagesMapStmt = db.prepare(
+  "SELECT id, rel_path, mtime, size FROM images WHERE deleted = 0"
+);
+export function loadImagesMap() {
+  const rows = loadImagesMapStmt.all() as {
+    id: number;
+    rel_path: string;
+    mtime: number;
+    size: number;
+  }[];
+  const map = new Map<string, { id: number; mtime: number; size: number }>();
+  for (const r of rows) {
+    map.set(r.rel_path, { id: r.id, mtime: r.mtime, size: r.size });
+  }
+  return map;
+}
+
+const markDeletedStmt = db.prepare(
+  "UPDATE images SET deleted = 1 WHERE rel_path = ?"
+);
+export function markDeleted(relPaths: string[]) {
+  if (!relPaths.length) return;
+  const tx = db.transaction((paths) => {
+    for (const p of paths) {
+      markDeletedStmt.run(p);
+    }
+  });
+  tx(relPaths);
+}
+
+// --- メタデータ操作 ---
+
+const setMetaStmt = db.prepare(
+  "INSERT INTO meta (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+);
+export function setMeta(key: string, value: string) {
+  setMetaStmt.run(key, value);
+}
+
+const getMetaStmt = db.prepare("SELECT value FROM meta WHERE key=?");
+export function getMeta(key: string): string | undefined {
+  const row = getMetaStmt.get(key) as { value: string } | undefined;
+  return row?.value;
+}
+
+// --- タグ操作 ---
+
+const getTagsForImageStmt = db.prepare(
+  "SELECT t.id, t.name FROM image_tags it JOIN tags t ON t.id=it.tag_id WHERE it.image_id=?"
+);
+export function getTagsForImage(imageId: number) {
+  return getTagsForImageStmt.all(imageId);
+}
+
+const listAllTagsStmt = db.prepare(
+  "SELECT id, name, (SELECT COUNT(*) FROM image_tags it WHERE it.tag_id=tags.id) AS usage_count FROM tags ORDER BY name"
+);
+export function listAllTags() {
+  return listAllTagsStmt.all();
+}
+
+const ensureTagInsertStmt = db.prepare(
+  "INSERT INTO tags (name) VALUES (?) ON CONFLICT(name) DO NOTHING"
+);
+const ensureTagSelectStmt = db.prepare("SELECT id FROM tags WHERE name=?");
+export function ensureTag(name: string): { id: number } {
+  ensureTagInsertStmt.run(name);
+  return ensureTagSelectStmt.get(name) as { id: number };
+}
+
+export function setTagsForImage(imageId: number, tagNames: string[]) {
+  const ids = tagNames.map((n) => ensureTag(n.trim())?.id).filter(Boolean);
+  const tx = db.transaction((newIds: number[]) => {
+    db.prepare("DELETE FROM image_tags WHERE image_id=?").run(imageId);
+    const ins = db.prepare(
+      "INSERT INTO image_tags (image_id, tag_id) VALUES (?,?)"
+    );
+    for (const id of newIds) {
+      ins.run(imageId, id);
+    }
+  });
+  tx(ids);
+}
+
+// --- DBインスタンス ---
 
 export function getDb() {
   return db;
-}
-// ... existing code ...
-
-export function getTagsForImage(imageId: number) {
-  return getDb()
-    .prepare(
-      `SELECT t.id, t.name FROM image_tags it JOIN tags t ON t.id=it.tag_id WHERE it.image_id=?`
-    )
-    .all(imageId);
-}
-export function listAllTags() {
-  return getDb()
-    .prepare(
-      `SELECT id, name, (SELECT COUNT(*) FROM image_tags it WHERE it.tag_id=tags.id) AS usage_count FROM tags ORDER BY name`
-    )
-    .all();
-}
-export function ensureTag(name: string) {
-  const stmt = getDb().prepare(
-    `INSERT INTO tags (name) VALUES (?) ON CONFLICT(name) DO NOTHING`
-  );
-  try {
-    stmt.run(name);
-  } catch {}
-  return getDb().prepare(`SELECT id FROM tags WHERE name=?`).get(name) as {
-    id: number;
-  };
-}
-export function setTagsForImage(imageId: number, tagNames: string[]) {
-  const db = getDb();
-  const ids = tagNames.map((n) => ensureTag(n.trim()).id);
-  const tx = db.transaction((newIds: number[]) => {
-    db.prepare(`DELETE FROM image_tags WHERE image_id=?`).run(imageId);
-    const ins = db.prepare(
-      `INSERT INTO image_tags (image_id, tag_id) VALUES (?,?)`
-    );
-    for (const id of newIds) ins.run(imageId, id);
-  });
-  tx(ids);
 }
