@@ -4,10 +4,8 @@ import sharp from "sharp";
 
 export default defineEventHandler(async (event) => {
   const id = Number(getRouterParam(event, "id"));
-  // --- ここを修正 ---
-  // require を await import に変更
+  // 動的にDBユーティリティを読み込むように修正
   const { getImageById } = await import("../../utils/db");
-  // --- ここまで修正 ---
   const img = getImageById(id);
   if (!img) {
     console.error(`[thumb] Image not found in DB for id: ${id}`);

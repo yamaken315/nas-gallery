@@ -1,5 +1,4 @@
-export default defineEventHandler(() => {
-  const { listAllTags } =
-    require("../../utils/db") as typeof import("../../utils/db");
+export default defineEventHandler(async () => {
+  const { listAllTags } = await import("../../utils/db");
   return listAllTags();
 });
