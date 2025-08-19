@@ -4,9 +4,10 @@ import sharp from "sharp";
 
 export default defineEventHandler(async (event) => {
   const id = Number(getRouterParam(event, "id"));
-  // 動的にDBユーティリティを読み込むように修正
-  const { getImageById } =
-    require("../../utils/db") as typeof import("../../utils/db");
+  // --- ここを修正 ---
+  // require を await import に変更
+  const { getImageById } = await import("../../utils/db");
+  // --- ここまで修正 ---
   const img = getImageById(id);
   if (!img) {
     console.error(`[thumb] Image not found in DB for id: ${id}`);
@@ -18,18 +19,14 @@ export default defineEventHandler(async (event) => {
   fs.mkdirSync(cacheDir, { recursive: true });
   const outPath = path.join(cacheDir, id + ".jpg");
 
-  // --- ここから修正 ---
-  // ファイルが存在しない、またはファイルサイズが0の場合に再生成する
   const fileExists = fs.existsSync(outPath);
   const needsGeneration =
     !fileExists || (fileExists && fs.statSync(outPath).size === 0);
 
   if (needsGeneration) {
-    // もし0バイトのファイルが存在するなら、一度削除する
     if (fileExists) {
       fs.unlinkSync(outPath);
     }
-    // --- ここまで修正 ---
 
     if (!fs.existsSync(abs)) {
       console.error(`[thumb] Source file not found: ${abs}`);
@@ -45,6 +42,10 @@ export default defineEventHandler(async (event) => {
         .toFile(outPath);
     } catch (e) {
       console.error(`[thumb] sharp failed for id ${id}:`, e);
+      // sharpが失敗した場合、空のファイルが残ることがあるので削除する
+      if (fs.existsSync(outPath)) {
+        fs.unlinkSync(outPath);
+      }
       throw createError({
         statusCode: 500,
         statusMessage: "Thumbnail generation failed",
@@ -52,7 +53,23 @@ export default defineEventHandler(async (event) => {
     }
   }
 
-  // sendStream を使ってファイルを返す
-  setHeader(event, "Content-Type", "image/jpeg");
-  return sendStream(event, fs.createReadStream(outPath));
+  // --- ここから修正 ---
+  // ストリームを返す前に、最終的にファイルが存在し、中身があることを確認する
+  try {
+    const stats = fs.statSync(outPath);
+    if (stats.size > 0) {
+      setHeader(event, "Content-Type", "image/jpeg");
+      return sendStream(event, fs.createReadStream(outPath));
+    }
+  } catch (e) {
+    // statSyncが失敗した場合 (ファイルが存在しないなど)
+    console.error(`[thumb] Final check failed for ${outPath}:`, e);
+  }
+
+  // ここに到達した場合、有効なサムネイルが提供できない
+  throw createError({
+    statusCode: 500,
+    statusMessage: "Could not provide a valid thumbnail",
+  });
+  // --- ここまで修正 ---
 });
