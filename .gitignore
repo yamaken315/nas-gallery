@@ -1,0 +1,23 @@
+# Build & runtime
+.nuxt
+.nitro
+.output
+.cache
+dist
+.data
+
+# Env
+.env
+.env.*
+!.env.example
+
+# Logs
+logs
+*.log
+
+# Node	node_modules
+
+# OS
+.DS_Store
+
+node_modules
