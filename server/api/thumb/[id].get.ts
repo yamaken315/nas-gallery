@@ -62,8 +62,30 @@ export default defineEventHandler(async (event) => {
   try {
     const stats = fs.statSync(outPath);
     if (stats.size > 0) {
-      if (debug) console.log(`[thumb][${id}] cache hit size=${stats.size}`);
-      return respondBuffer(outPath, "hit");
+      // 簡易JPEG検証 (SOI/EOI マーカー)
+      let valid = true;
+      try {
+        const fd = fs.openSync(outPath, "r");
+        const head = Buffer.alloc(4);
+        const tail = Buffer.alloc(2);
+        fs.readSync(fd, head, 0, 4, 0);
+        fs.readSync(fd, tail, 0, 2, stats.size - 2);
+        fs.closeSync(fd);
+        if (!(head[0] === 0xff && head[1] === 0xd8)) valid = false; // SOI
+        if (!(tail[0] === 0xff && tail[1] === 0xd9)) valid = false; // EOI
+      } catch (e) {
+        valid = false;
+      }
+      if (!valid) {
+        if (debug)
+          console.warn(`[thumb][${id}] invalid jpeg cache -> regenerate`);
+        try {
+          fs.unlinkSync(outPath);
+        } catch {}
+      } else {
+        if (debug) console.log(`[thumb][${id}] cache hit size=${stats.size}`);
+        return respondBuffer(outPath, "hit");
+      }
     } else {
       // 0バイトファイルは破棄
       try {
