@@ -55,7 +55,28 @@ walk(root);
 let inserted = 0,
   updated = 0,
   skipped = 0,
-  thumbGen = 0;
+  thumbGen = 0; // 互換用（常に 0 に近くなる想定）
+
+// 簡易 JPEG 末尾検査 (SOI/EOI)
+function isLikelyTruncatedJpeg(abs, stat) {
+  if (!/\.jpe?g$/i.test(abs)) return false;
+  if (stat.size < 4) return true;
+  try {
+    const fd = fs.openSync(abs, 'r');
+    const head = Buffer.alloc(2);
+    const tail = Buffer.alloc(2);
+    fs.readSync(fd, head, 0, 2, 0);
+    fs.readSync(fd, tail, 0, 2, stat.size - 2);
+    fs.closeSync(fd);
+    if (!(head[0] === 0xFF && head[1] === 0xD8)) return true; // SOI 欠落
+    if (!(tail[0] === 0xFF && tail[1] === 0xD9)) return true; // EOI 欠落
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+const truncatedList = [];
 
 // サムネイル出力パス
 const cacheDir = path.join(process.cwd(), ".cache", "thumbs");
@@ -101,20 +122,10 @@ for (const abs of diskFiles) {
       });
       if (!prev) inserted++;
       else updated++;
-      const idForName = prev?.id;
-      if (idForName) {
-        const thumbPath = path.join(cacheDir, idForName + ".jpg");
-        if (!fs.existsSync(thumbPath)) {
-          try {
-            await sharp(abs)
-              .resize(320)
-              .jpeg({ quality: 80 })
-              .toFile(thumbPath);
-            thumbGen++;
-          } catch (e) {
-            console.error("\n[thumb] fail", rel, e.message);
-          }
-        }
+      // ここでのサムネイル事前生成は廃止（オンデマンド生成に一本化）
+      // 代わりに壊れ JPEG の簡易検査のみ実施
+      if (isLikelyTruncatedJpeg(abs, stat)) {
+        truncatedList.push(rel);
       }
       process.stdout.write(".");
     } catch (e) {
@@ -150,7 +161,19 @@ if (toDelete.length) {
 await runPool(CONCURRENCY);
 setMeta("last_scan_finished", new Date().toISOString());
 
+// 壊れ画像レポート
+if (truncatedList.length) {
+  const reportPath = path.join(projectRoot(), 'data', 'corrupted-images.log');
+  try {
+    const lines = truncatedList.sort().join('\n') + '\n';
+    fs.appendFileSync(reportPath, `# ${new Date().toISOString()} truncated=${truncatedList.length}\n` + lines);
+    console.warn(`\n[scan] detected truncated JPEGs: ${truncatedList.length} (logged to data/corrupted-images.log)`);
+  } catch (e) {
+    console.warn(`\n[scan] failed to write corrupted report:`, e.message);
+  }
+}
+
 const elapsed = ((Date.now() - start) / 1000).toFixed(1);
 console.log(
-  `\n[scan] done in ${elapsed}s files=${diskFiles.length} inserted=${inserted} updated=${updated} skipped=${skipped} deleted=${toDelete.length} thumbs=${thumbGen}`
+  `\n[scan] done in ${elapsed}s files=${diskFiles.length} inserted=${inserted} updated=${updated} skipped=${skipped} deleted=${toDelete.length} thumbs(pre-gen removed)=${thumbGen} truncated=${truncatedList.length}`
 );
