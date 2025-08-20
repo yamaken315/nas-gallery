@@ -146,36 +146,104 @@ export default defineEventHandler(async (event) => {
     fs.mkdirSync(cacheDir, { recursive: true });
     const tmp = outPath + ".tmp-" + process.pid + "-" + Date.now();
     try {
-      // まずメタデータを取得して色空間やチャンネル構成を確認
-      const probe = sharp(abs, { failOn: "none" });
+      // まずメタデータを取得して色空間やチャンネル構成を確認 (failOn なしで最大限情報取得)
+      const probe = sharp(abs, { failOn: "none", sequentialRead: true });
       const meta = await probe.metadata();
       if (debug)
         console.log(
-          `[thumb][${id}] meta space=${meta.space} channels=${meta.channels} alpha=${meta.hasAlpha}`
+          `[thumb][${id}] meta space=${meta.space} channels=${meta.channels} alpha=${meta.hasAlpha} w=${meta.width} h=${meta.height}`
         );
 
-      let pipeline = sharp(abs, { failOn: "none" }).rotate();
+      let pipeline = sharp(abs, {
+        failOn: "none",
+        sequentialRead: true,
+      }).rotate();
 
-      // CMYK やその他 sRGB 以外は sRGB に変換 (緑かぶり/色ズレ対策)
       if (meta.space && !["srgb", "rgb"].includes(meta.space)) {
         pipeline = pipeline.toColorspace("srgb");
         if (debug) console.log(`[thumb][${id}] colorspace -> srgb`);
       }
-
-      // 透過がある (PNG 等) 場合は白背景でフラット化 (緑/意図しない透過パターン対策)
       if (meta.hasAlpha) {
         pipeline = pipeline.flatten({ background: "#ffffff" });
         if (debug) console.log(`[thumb][${id}] flatten alpha -> white`);
       }
 
-      await pipeline
+      // Buffer 生成 → 検証 → 問題なければファイル化 (部分書き込み/中断による破損検出強化)
+      const buf = await pipeline
         .resize({
           width: config.public.thumbnailWidth,
           withoutEnlargement: true,
         })
         .jpeg({ quality: 80 })
-        .toFile(tmp);
-      if (debug) console.log(`[thumb][${id}] sharp success tmp`);
+        .toBuffer();
+
+      let valid = true;
+      let reason = "ok";
+      // JPEG SOI / EOI
+      if (
+        !(
+          buf[0] === 0xff &&
+          buf[1] === 0xd8 &&
+          buf[buf.length - 2] === 0xff &&
+          buf[buf.length - 1] === 0xd9
+        )
+      ) {
+        valid = false;
+        reason = "marker";
+      }
+      // メタ再検査
+      if (valid) {
+        try {
+          const tMeta = await sharp(buf, { failOn: "none" }).metadata();
+          if (!tMeta.width || !tMeta.height) {
+            valid = false;
+            reason = "no-dim";
+          } else if (tMeta.width > (config.public.thumbnailWidth || 99999)) {
+            valid = false;
+            reason = "oversize";
+          } else if (tMeta.width < 4 && (meta.width || 0) > 16) {
+            // 元が十分大きいのに 1x1/極小は異常
+            valid = false;
+            reason = "too-small";
+          }
+        } catch (ve) {
+          valid = false;
+          reason = "reprobe";
+        }
+      }
+      // 異常に小さいサイズ (既知 placeholder 近傍だが元が中〜大サイズ) を追加判定
+      if (valid && buf.length < 600 && (meta.width || 0) > 64) {
+        valid = false;
+        reason = "suspicious-small";
+      }
+
+      if (!valid) {
+        genStatus = "placeholder";
+        if (debug)
+          console.warn(
+            `[thumb][${id}] validation failed reason=${reason} -> placeholder`
+          );
+        const placeholder = Buffer.from(
+          "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////2wBDAf//////////////////////////////////////////////////////////////////////////////////////wAARCAAQABADASIAAhEBAxEB/8QAFwAAAwEAAAAAAAAAAAAAAAAAAAIDB//EABYBAQEBAAAAAAAAAAAAAAAAAAABAv/EABYBAQEBAAAAAAAAAAAAAAAAAAEABf/EABYRAQEBAAAAAAAAAAAAAAAAAAACAf/aAAwDAQACEQMRAD8A0QAAAP/Z",
+          "base64"
+        );
+        fs.writeFileSync(tmp, placeholder);
+        // 診断ログ
+        try {
+          const diagDir = path.join(process.cwd(), "data");
+          fs.mkdirSync(diagDir, { recursive: true });
+          fs.appendFileSync(
+            path.join(diagDir, "thumbnail-gen.log"),
+            `${new Date().toISOString()} id=${id} placeholder reason=${reason} origMeta=${
+              meta.width
+            }x${meta.height} bufSize=${buf.length}\n`
+          );
+        } catch {}
+      } else {
+        fs.writeFileSync(tmp, buf);
+        if (debug)
+          console.log(`[thumb][${id}] sharp success tmp size=${buf.length}`);
+      }
     } catch (err: any) {
       const msg = String(err?.message || err);
       // 壊れた / 途中までの JPEG の場合はプレースホルダ
@@ -189,6 +257,17 @@ export default defineEventHandler(async (event) => {
         );
         fs.writeFileSync(tmp, placeholder);
         if (debug) console.log(`[thumb][${id}] placeholder generated`);
+        try {
+          const diagDir = path.join(process.cwd(), "data");
+          fs.mkdirSync(diagDir, { recursive: true });
+          fs.appendFileSync(
+            path.join(diagDir, "thumbnail-gen.log"),
+            `${new Date().toISOString()} id=${id} placeholder reason=sharp-error msg=${msg.replace(
+              /\s+/g,
+              " "
+            )}\n`
+          );
+        } catch {}
       } else {
         throw err; // 他のエラーは上位で 500
       }

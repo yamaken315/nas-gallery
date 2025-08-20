@@ -163,11 +163,19 @@ setMeta("last_scan_finished", new Date().toISOString());
 
 // 壊れ画像レポート
 if (truncatedList.length) {
-  const reportPath = path.join(projectRoot(), 'data', 'corrupted-images.log');
+  // projectRoot() は未定義だったため、実行時カレントディレクトリをプロジェクトルートとみなす
+  const reportDir = path.join(process.cwd(), 'data');
   try {
+    fs.mkdirSync(reportDir, { recursive: true });
+    const reportPath = path.join(reportDir, 'corrupted-images.log');
     const lines = truncatedList.sort().join('\n') + '\n';
-    fs.appendFileSync(reportPath, `# ${new Date().toISOString()} truncated=${truncatedList.length}\n` + lines);
-    console.warn(`\n[scan] detected truncated JPEGs: ${truncatedList.length} (logged to data/corrupted-images.log)`);
+    fs.appendFileSync(
+      reportPath,
+      `# ${new Date().toISOString()} truncated=${truncatedList.length}\n` + lines
+    );
+    console.warn(
+      `\n[scan] detected truncated JPEGs: ${truncatedList.length} (logged to data/corrupted-images.log)`
+    );
   } catch (e) {
     console.warn(`\n[scan] failed to write corrupted report:`, e.message);
   }
