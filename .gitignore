@@ -5,7 +5,7 @@
 .cache
 dist
 /data/
-/data/meta.db
+data/meta.db
 # Env
 .env
 .env.*
@@ -21,3 +21,5 @@ logs
 .DS_Store
 
 node_modules
+data/meta.db
+data/meta.db
