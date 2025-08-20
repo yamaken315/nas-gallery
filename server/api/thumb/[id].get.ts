@@ -18,23 +18,28 @@ export default defineEventHandler(async (event) => {
 
   if (debug) console.log(`[thumb][${id}] start debug`);
 
-  function respond(outPath: string, gen: string) {
-    const st = fs.statSync(outPath);
-    if (st.size === 0) {
+  function respondBuffer(outPath: string, gen: string) {
+    const data = fs.readFileSync(outPath); // 同期で確実にバッファ取得
+    if (data.length === 0) {
       throw createError({
         statusCode: 500,
         statusMessage: "Zero-byte thumbnail",
       });
     }
-    // 明示的に 200 固定 (204 化防止)
+    // 強制 200
     event.node.res.statusCode = 200;
     setHeader(event, "Content-Type", "image/jpeg");
-    // H3 setHeader は string 受け取りだが型定義差異回避のためテンプレート化
-    setHeader(event as any, "Content-Length", st.size as any);
+    setHeader(event as any, "Content-Length", data.length as any);
+    // 一時的にブラウザ / 中間キャッシュ無効化できる debug オプション
+    const noCache = debug || "nocache" in (q || {});
     setHeader(
       event,
       "Cache-Control",
-      gen === "placeholder" ? "public, max-age=300" : "public, max-age=3600"
+      noCache
+        ? "no-store"
+        : gen === "placeholder"
+        ? "public, max-age=300"
+        : "public, max-age=3600"
     );
     setHeader(event, "X-Thumb-Gen", gen);
     if (gen === "placeholder")
@@ -43,11 +48,14 @@ export default defineEventHandler(async (event) => {
       setHeader(
         event,
         "X-Debug",
-        `${gen};${Date.now() - t0}ms;size=${st.size}`
+        `${gen};${Date.now() - t0}ms;bytes=${data.length}`
       );
-    // ETag が 204 化に絡む疑いがある場合は明示的にオフ (空文字より no-store 指定)
-    if (debug) setHeader(event, "Cache-Debug", "force200");
-    return sendStream(event, fs.createReadStream(outPath));
+    // ETag/Last-Modified が 204/304 判定に干渉しないよう debug 時は抑制
+    if (debug) {
+      setHeader(event, "ETag", `debug-${Date.now()}-${data.length}`);
+      setHeader(event, "Last-Modified", new Date().toUTCString());
+    }
+    return data;
   }
 
   // 1. キャッシュヒット判定 (サイズ0は削除して再生成)
@@ -55,7 +63,7 @@ export default defineEventHandler(async (event) => {
     const stats = fs.statSync(outPath);
     if (stats.size > 0) {
       if (debug) console.log(`[thumb][${id}] cache hit size=${stats.size}`);
-      return respond(outPath, "hit");
+      return respondBuffer(outPath, "hit");
     } else {
       // 0バイトファイルは破棄
       try {
@@ -154,5 +162,5 @@ export default defineEventHandler(async (event) => {
   }
 
   // 4. 応答
-  return respond(outPath, genStatus);
+  return respondBuffer(outPath, genStatus);
 });
