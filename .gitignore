@@ -4,7 +4,7 @@
 .output
 .cache
 dist
-.data
+/data/
 
 # Env
 .env
