@@ -1,13 +1,17 @@
 import path from "node:path";
 import fs from "node:fs";
+import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
 
-// __dirname = server/utils
-const projectRoot = path.resolve(__dirname, "..", ".."); // nas-gallery/
+// ESMでの __dirname 相当
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// プロジェクトルート (server/utils から2階層上)
+const projectRoot = path.resolve(__dirname, "../../");
 const dbDir = path.join(projectRoot, "data");
 fs.mkdirSync(dbDir, { recursive: true });
 const dbPath = path.join(dbDir, "meta.db");
-// 以降 dbPath 利用 (process.cwd() 依存を削除)
 const db = new Database(dbPath);
 
 // --- スキーマ定義 ---
@@ -79,8 +83,8 @@ const listImagesStmt = db.prepare(`
   ORDER BY id DESC
   LIMIT ? OFFSET ?
 `);
-export function listImages(limit: number, offset: number) {
-  return listImagesStmt.all(limit, offset);
+export function listImages(offset: number, limit: number) {
+  return listImagesStmt.all(limit, offset); // LIMIT に limit, OFFSET に offset
 }
 
 const getImageByIdStmt = db.prepare(
