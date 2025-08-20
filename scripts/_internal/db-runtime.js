@@ -3,8 +3,10 @@ import Database from 'better-sqlite3'
 import fs from 'node:fs'
 import path from 'node:path'
 
-const dbPath = path.join(process.cwd(), 'data', 'meta.db')
-fs.mkdirSync(path.dirname(dbPath), { recursive: true })
+const projectRoot = path.resolve(process.cwd())
+const dbDir = path.join(projectRoot, 'data')
+fs.mkdirSync(dbDir, { recursive: true })
+const dbPath = path.join(dbDir, 'meta.db')
 const db = new Database(dbPath)
 
 db.exec(`
@@ -49,7 +51,7 @@ export function upsertImage(meta) {
 }
 
 export function loadImagesMap() {
-  const rows = db.prepare('SELECT id, rel_path, mtime, size FROM images').all()
+  const rows = db.prepare('SELECT id, rel_path, mtime, size FROM images WHERE deleted=0').all()
   const map = {}
   for (const r of rows) map[r.rel_path] = { id: r.id, mtime: r.mtime, size: r.size }
   return map

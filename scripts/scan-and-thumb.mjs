@@ -8,12 +8,13 @@ const root = process.env.IMAGE_ROOT || "/mnt/nas/photos";
 const exts = [".jpg", ".jpeg", ".png", ".webp"];
 const CONCURRENCY = Number(process.env.SCAN_CONCURRENCY || os.cpus().length);
 
-// TypeScript の db.ts はそのままでは Node が解釈できないため、純 JS 版を利用
+// スキャン専用の純 JS DB モジュールを内部ディレクトリから読み込む (server/utils からは削除済み)
 let dbMod;
 try {
-  dbMod = await import("../server/utils/db-runtime.js");
+  // auto-import 対象外に移動した純JS版DBモジュールを読み込む
+  dbMod = await import("./_internal/db-runtime.js");
 } catch (e) {
-  console.error("[scan] FATAL: cannot load db-runtime.js. Did you create it?", e);
+  console.error("[scan] FATAL: cannot load internal db-runtime module", e);
   process.exit(1);
 }
 const { upsertImage, loadImagesMap, markDeleted, setMeta } = dbMod;
