@@ -49,20 +49,25 @@ cp .env.example .env
 # 画像が保存されているルートディレクトリへの絶対パス（例: NASのマウントポイント）
 IMAGE_ROOT=/path/to/your/nas/photos
 
-# 基本認証の認証情報
-BASIC_AUTH_USER=admin
-BASIC_AUTH_PASS=your-secret-password
+# 基本認証の認証情報 (nuxt.config.ts の runtimeConfig に対応)
+BASIC_USER=viewer
+# 形式: plain:パスワード  （将来的に bcrypt 等へ拡張予定）
+BASIC_PASS_HASH=plain:your-secret-password
 
 # (任意) アプリケーションのポート番号
 NUXT_PORT=3000
 
-# (任意) サムネイルの幅（ピクセル単位）
-NUXT_PUBLIC_THUMBNAIL_WIDTH=400
+# (任意) サムネイルの幅（ピクセル単位）※ フロント公開設定
+NUXT_PUBLIC_THUMBNAIL_WIDTH=320
+
+# (任意) スキャン並列数 (CPU コア数未満に抑えると安定)
+SCAN_CONCURRENCY=6
 ```
 
 **【重要】**
--   `IMAGE_ROOT`には、画像が格納されているディレクトリへの**絶対パス**を指定してください。
--   `BASIC_AUTH_PASS`は、推測されにくい強力なパスワードに変更してください。
+- `IMAGE_ROOT` には画像が格納されているディレクトリへの **絶対パス** を指定してください。
+- 認証は `BASIC_USER` と `BASIC_PASS_HASH` (plain:接頭辞) を使います。旧ドキュメントの `BASIC_AUTH_USER/BASIC_AUTH_PASS` とは異なります。
+- パスワードは強力なものにし、将来 `bcrypt:` などへ移行する想定です。
 
 ### 5. 画像ディレクトリのスキャン
 
@@ -73,9 +78,10 @@ npm run scan
 ```
 
 このスクリプトは以下の処理を行います。
--   `IMAGE_ROOT`内のすべての画像ファイル（.jpg, .jpeg, .png, .gif）を検索します。
--   見つかったファイル情報をローカルのSQLiteデータベース（`data/meta.db`）に登録します。
--   以前登録されていたが見つからなくなったファイルを「削除済み」としてマークします。
+- `IMAGE_ROOT` 内のすべての画像ファイル（`.jpg`, `.jpeg`, `.png`, `.webp`）を検索します。
+- 見つかったファイル情報をローカル SQLite (`data/meta.db`) に upsert。
+- 以前登録されていたが見つからなくなったファイルを「削除済み」マーク。
+- 一部 JPEG の SOI/EOI 簡易検査で「明確に破損」していそうなものを検出し `data/corrupted-images.log` に追記。
 
 **注記：** スキャンスクリプト自体はサムネイルを事前生成しません。サムネイルは初回アクセス時にオンデマンドで生成され、二重生成や同時アクセスによる破損を避けるため一時ファイル → リネームで原子的に保存されます。
 
@@ -109,10 +115,49 @@ npm run reset:db -- --images-only # images / image_tags のみ削除
 
 ## サムネイルキャッシュについて
 
-生成されたサムネイルは `.cache/thumbs/` に保存されます。存在しない場合のみ Sharp で生成し、0バイトなど破損キャッシュは検出時に自動削除して再生成します。HTTPレスポンスには以下のヘッダが付与されます:
+生成されたサムネイルは `.cache/thumbs/` に保存されます。生成フローは以下の安全策を含みます:
+1. Sharp で一旦メモリ上に JPEG を生成
+2. JPEG マーカー (SOI/EOI)、寸法、サイズの妥当性チェック
+3. OK の場合のみ一時ファイル → `rename` で原子的配置
+4. 失敗・異常時は 1x1 プレースホルダ (白) を保存し、理由をログ
 
-- `X-Thumb-Gen: hit` 既存キャッシュを利用
-- `X-Thumb-Gen: miss` 新規生成
+HTTP レスポンスヘッダ:
+- `X-Thumb-Gen: hit | miss | placeholder`
+- `X-Thumb-Reason: marker | no-dim | oversize | too-small | suspicious-small | reprobe | sharp-error` (placeholder 時)
 
-ブラウザキャッシュ用に `Cache-Control: public, max-age=3600` を付与しています。必要に応じて `nuxt.config.ts` の `routeRules` でCDNキャッシュポリシーを調整してください。
+ログ/診断:
+- `data/thumbnail-gen.log` : placeholder 生成時の詳細 (id, reason, 元寸法, 生成サイズ, 先頭/末尾 HEX)
+- `data/corrupted-images.log` : スキャン時判定した破損元ファイル一覧
+
+ブラウザキャッシュ: 通常サムネイルは `Cache-Control: public, max-age=3600`。プレースホルダは短め (`max-age=300`)。`?debug` 付与で `no-store` 強制と追加ヘッダ表示。
+
+同時アクセス時の競合: `.lock` ファイルによる簡易ロックで重複生成を抑止しています。
+
+再生成: キャッシュが 0 バイト / 無効 JPEG と判定された場合は削除後再生成されます。
+
+デバッグ例:
+```
+curl -I 'http://localhost:3000/api/thumb/123?debug'
+```
+ヘッダで `X-Thumb-Gen` / `X-Thumb-Reason` を確認します。
+
+問題切り分けの推奨手順:
+1. `npm run scan` で DB & 破損ログ更新
+2. 問題 ID に `?debug` を付けアクセス
+3. `data/thumbnail-gen.log` を tail して理由を把握
+4. 元ファイル差し替え / 変換後に再アクセス
+
+クリーンアップ (開発中のネイティブ不整合や破損キャッシュ疑い時):
+```
+rm -rf .nuxt .nitro .output dist .cache/thumbs
+npm rebuild sharp better-sqlite3
+```
+再度 `npm run dev`。
+
+より完全な再構築 (依存も再インストール):
+```
+rm -rf .nuxt .nitro .output dist .cache node_modules
+npm install
+npm run dev
+```
 
