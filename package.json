@@ -14,7 +14,8 @@
   "dependencies": {
     "better-sqlite3": "^12.2.0",
     "nuxt": "^4.0.3",
-    "sharp": "^0.34.3"
+    "sharp": "^0.34.3",
+    "vue-easy-lightbox": "^1.19.0"
   },
   "devDependencies": {
     "@types/node": "^24.3.0",
