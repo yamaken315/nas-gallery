@@ -1,9 +1,13 @@
+import path from "node:path";
+import fs from "node:fs";
 import Database from "better-sqlite3";
-import * as fs from "node:fs";
-import * as path from "node:path";
 
-const dbPath = path.join(process.cwd(), "data", "meta.db");
-fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+// __dirname = server/utils
+const projectRoot = path.resolve(__dirname, "..", ".."); // nas-gallery/
+const dbDir = path.join(projectRoot, "data");
+fs.mkdirSync(dbDir, { recursive: true });
+const dbPath = path.join(dbDir, "meta.db");
+// 以降 dbPath 利用 (process.cwd() 依存を削除)
 const db = new Database(dbPath);
 
 // --- スキーマ定義 ---
