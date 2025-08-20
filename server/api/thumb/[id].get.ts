@@ -83,8 +83,25 @@ export default defineEventHandler(async (event) => {
           fs.unlinkSync(outPath);
         } catch {}
       } else {
-        if (debug) console.log(`[thumb][${id}] cache hit size=${stats.size}`);
-        return respondBuffer(outPath, "hit");
+        // 小さすぎる (プレースホルダ閾値) なら placeholder として応答
+        let kind: "hit" | "placeholder" = "hit";
+        if (stats.size >= 250 && stats.size <= 350) {
+          try {
+            const buf = fs.readFileSync(outPath);
+            // JFIF 文字列を含み、サイズが小さい → 1x1 JPEG の典型パターン
+            if (buf.includes(Buffer.from("JFIF"))) {
+              kind = "placeholder";
+            }
+          } catch {}
+        }
+        if (debug)
+          console.log(
+            `[thumb][${id}] cache hit size=${stats.size} kind=${kind}`
+          );
+        return respondBuffer(
+          outPath,
+          kind === "placeholder" ? "placeholder" : "hit"
+        );
       }
     } else {
       // 0バイトファイルは破棄
