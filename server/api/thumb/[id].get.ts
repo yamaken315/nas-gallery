@@ -129,9 +129,33 @@ export default defineEventHandler(async (event) => {
     fs.mkdirSync(cacheDir, { recursive: true });
     const tmp = outPath + ".tmp-" + process.pid + "-" + Date.now();
     try {
-      await sharp(abs)
-        .rotate() // EXIF Orientation 対応
-        .resize(config.public.thumbnailWidth)
+      // まずメタデータを取得して色空間やチャンネル構成を確認
+      const probe = sharp(abs, { failOn: "none" });
+      const meta = await probe.metadata();
+      if (debug)
+        console.log(
+          `[thumb][${id}] meta space=${meta.space} channels=${meta.channels} alpha=${meta.hasAlpha}`
+        );
+
+      let pipeline = sharp(abs, { failOn: "none" }).rotate();
+
+      // CMYK やその他 sRGB 以外は sRGB に変換 (緑かぶり/色ズレ対策)
+      if (meta.space && !["srgb", "rgb"].includes(meta.space)) {
+        pipeline = pipeline.toColorspace("srgb");
+        if (debug) console.log(`[thumb][${id}] colorspace -> srgb`);
+      }
+
+      // 透過がある (PNG 等) 場合は白背景でフラット化 (緑/意図しない透過パターン対策)
+      if (meta.hasAlpha) {
+        pipeline = pipeline.flatten({ background: "#ffffff" });
+        if (debug) console.log(`[thumb][${id}] flatten alpha -> white`);
+      }
+
+      await pipeline
+        .resize({
+          width: config.public.thumbnailWidth,
+          withoutEnlargement: true,
+        })
         .jpeg({ quality: 80 })
         .toFile(tmp);
       if (debug) console.log(`[thumb][${id}] sharp success tmp`);
