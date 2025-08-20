@@ -42,8 +42,12 @@ export default defineEventHandler(async (event) => {
         : "public, max-age=3600"
     );
     setHeader(event, "X-Thumb-Gen", gen);
-    if (gen === "placeholder")
+    if (gen === "placeholder") {
       setHeader(event, "X-Thumb-Error", "truncated-jpeg");
+      if ((event as any).context?.thumbReason) {
+        setHeader(event, "X-Thumb-Reason", (event as any).context.thumbReason);
+      }
+    }
     if (debug)
       setHeader(
         event,
@@ -142,6 +146,45 @@ export default defineEventHandler(async (event) => {
 
   // 3. サムネイル生成 (一時ファイル→rename で原子的に配置)
   let genStatus: "miss" | "placeholder" = "miss";
+  let genReason: string | undefined;
+
+  // 簡易ロック (同一ID同時生成を避ける) ----------------------------------
+  const lockPath = outPath + ".lock";
+  const lockStart = Date.now();
+  let haveLock = false;
+  while (true) {
+    try {
+      const fd = fs.openSync(lockPath, "wx");
+      fs.closeSync(fd);
+      haveLock = true;
+      break;
+    } catch (e: any) {
+      if (e && e.code === "EEXIST") {
+        // 既に他プロセス/リクエストが生成中
+        if (Date.now() - lockStart > 5000) {
+          // タイムアウト: ロック放棄扱い
+          try {
+            fs.unlinkSync(lockPath);
+          } catch {}
+          if (debug) console.warn(`[thumb][${id}] stale lock cleared`);
+          continue;
+        }
+        // サムネイルが既に出来上がったら抜ける
+        if (fs.existsSync(outPath)) {
+          if (debug) console.log(`[thumb][${id}] wait lock -> now cache ready`);
+          return respondBuffer(outPath, "hit");
+        }
+        // 少し待機
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50); // 50ms sleep 的利用
+        continue;
+      } else {
+        // 予期しないロックエラーは無視して続行
+        if (debug) console.warn(`[thumb][${id}] lock error: ${e?.code}`);
+        break;
+      }
+    }
+  }
+  // --------------------------------------------------------------------
   try {
     fs.mkdirSync(cacheDir, { recursive: true });
     const tmp = outPath + ".tmp-" + process.pid + "-" + Date.now();
@@ -176,12 +219,12 @@ export default defineEventHandler(async (event) => {
         })
         .jpeg({ quality: 80 })
         .toBuffer();
-
       let valid = true;
       let reason = "ok";
-      // JPEG SOI / EOI
+      // JPEG マーカー検証
       if (
         !(
+          buf.length > 4 &&
           buf[0] === 0xff &&
           buf[1] === 0xd8 &&
           buf[buf.length - 2] === 0xff &&
@@ -202,23 +245,22 @@ export default defineEventHandler(async (event) => {
             valid = false;
             reason = "oversize";
           } else if (tMeta.width < 4 && (meta.width || 0) > 16) {
-            // 元が十分大きいのに 1x1/極小は異常
             valid = false;
             reason = "too-small";
           }
-        } catch (ve) {
+        } catch {
           valid = false;
           reason = "reprobe";
         }
       }
-      // 異常に小さいサイズ (既知 placeholder 近傍だが元が中〜大サイズ) を追加判定
+      // 異常に小さいバイトサイズ (元が大きいのに小容量)
       if (valid && buf.length < 600 && (meta.width || 0) > 64) {
         valid = false;
         reason = "suspicious-small";
       }
-
       if (!valid) {
         genStatus = "placeholder";
+        genReason = reason;
         if (debug)
           console.warn(
             `[thumb][${id}] validation failed reason=${reason} -> placeholder`
@@ -228,15 +270,16 @@ export default defineEventHandler(async (event) => {
           "base64"
         );
         fs.writeFileSync(tmp, placeholder);
-        // 診断ログ
         try {
           const diagDir = path.join(process.cwd(), "data");
           fs.mkdirSync(diagDir, { recursive: true });
+          const head = buf.slice(0, 32).toString("hex");
+          const tail = buf.slice(-32).toString("hex");
           fs.appendFileSync(
             path.join(diagDir, "thumbnail-gen.log"),
             `${new Date().toISOString()} id=${id} placeholder reason=${reason} origMeta=${
               meta.width
-            }x${meta.height} bufSize=${buf.length}\n`
+            }x${meta.height} bufSize=${buf.length} head=${head} tail=${tail}\n`
           );
         } catch {}
       } else {
@@ -301,8 +344,18 @@ export default defineEventHandler(async (event) => {
         statusMessage: "Thumbnail generation failed",
       });
     }
+  } finally {
+    if (haveLock) {
+      try {
+        fs.unlinkSync(lockPath);
+      } catch {}
+    }
   }
 
   // 4. 応答
+  if (genStatus === "placeholder" && genReason) {
+    (event as any).context = (event as any).context || {};
+    (event as any).context.thumbReason = genReason;
+  }
   return respondBuffer(outPath, genStatus);
 });
