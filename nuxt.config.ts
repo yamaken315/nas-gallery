@@ -2,6 +2,7 @@ import { defineNuxtConfig } from "nuxt/config";
 
 export default defineNuxtConfig({
   devtools: false,
+  compatibilityDate: "2024-12-01",
   nitro: {
     routeRules: {
       "/api/thumb/**": { cache: { maxAge: 60 * 60 } },

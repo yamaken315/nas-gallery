@@ -9,7 +9,8 @@
     "generate": "nuxt generate",
     "preview": "nuxt preview",
     "postinstall": "nuxt prepare",
-    "scan": "node scripts/scan-and-thumb.mjs"
+  "scan": "node scripts/scan-and-thumb.mjs",
+  "reset:db": "node scripts/reset-db.mjs"
   },
   "dependencies": {
     "better-sqlite3": "^12.2.0",
